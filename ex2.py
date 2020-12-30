@@ -61,9 +61,9 @@ def draw_sol_from_model(model):
         state, time, row, col = extract_id(abs(lit))
         valid = lit > 0 and row != 999 and state in P.states
         if valid:
-            #print(vpool.obj(lit))
-            #print(time, row, col)
-            #print(board[time][row][col])
+            print(vpool.obj(lit))
+            print(time, row, col)
+            print(board[time][row][col])
             assert board[time][row][col] == ''
             board[time][row][col] = state
     print(board)
@@ -99,7 +99,6 @@ def add_initial_state_to_KB(true_state, t, i, j):
             P.KB.append([literals(state, t, i, j)])
         else:
             P.KB.append([-literals(state, t, i, j)])
-            
 def add_qureire_to_solver(true_state, t, i, j, solver):
     '''set state to ture and other states of same cell to false'''
     for state in P.states:
@@ -107,7 +106,21 @@ def add_qureire_to_solver(true_state, t, i, j, solver):
             solver.add_clause([literals(state, t, i, j)])
         else:
             solver.add_clause([-literals(state, t, i, j)])
-            
+
+def add_initial_unknown(t, i, j):
+    '''when ? and this is the first turn its can be H or U or S and not Q or I'''
+    if t != 0:
+        return
+    assert t == 0
+    valid_start_literals = [literals('H', t, i, j), literals('U', t, i, j), literals('S', t, i, j)]
+    if P.police:
+        #valid_start_literals.append(literals('Q', t, i, j))
+        P.KB.append([-literals('Q', t, i, j)])
+    if P.medics:
+        #valid_start_literals.append(literals('I', t, i, j))
+        P.KB.append([-literals('I', t, i, j)])
+    P.KB.extend(CardEnc.equals(lits=valid_start_literals, vpool=vpool))
+    
 def init_padding_litirals():
     '''padding the grid with literals that are not belogns to states to handle edge issues'''
     for t in range(P.times):
@@ -123,12 +136,33 @@ def infected_pre_cond(t, i, j):
     assert t != P.times
     # infect_t-> H_t
     P.KB.append([-literals('infect', t, i, j), literals('H', t, i, j)]) 
-    #infect_t -> (s1|s2|s3|s4)
-    n_formula = [literals('S', t, n_i, n_j) for n_i, n_j in find_neighbors(i, j)] 
-    n_formula.append(-literals('infect', t, i, j))
-    P.KB.append(n_formula)
-
-
+    if not P.police:
+    #infect_t -> (ns1|ns2|ns3|ns4)
+        n_formula = [literals('S', t, n_i, n_j) for n_i, n_j in find_neighbors(i, j)] 
+        n_formula.append(-literals('infect', t, i, j))
+        P.KB.append(n_formula)
+    else:
+        #infect_t -> (ns1&~nq1|ns2~nq2|ns3~nq3|ns4~nq4)
+        inf = literals('infect', t, i, j)
+        ns = [literals('S', t, n_i, n_j) for n_i, n_j in find_neighbors(i, j)] 
+        nq = [literals('quarantie', t, n_i, n_j) for n_i, n_j in find_neighbors(i, j)] 
+        P.KB.append([ns[0], ns[1], ns[2], ns[3], -inf])
+        P.KB.append([ns[0], ns[1] , ns[2] , -inf , -nq[3]]  )
+        P.KB.append([ns[0], ns[1] , ns[3] , -inf , -nq[2]]  )
+        P.KB.append([ns[0], ns[2] , ns[3] , -inf , -nq[1]])
+        P.KB.append([ns[1], ns[2] , ns[3] , -inf , -nq[0]]  )
+        P.KB.append([ns[0], ns[1] , -inf , -nq[2] , -nq[3]]  )
+        P.KB.append([ns[0], ns[2] , -inf , -nq[1] , -nq[3]] )
+        P.KB.append([ns[0], ns[3] , -inf , -nq[1] , -nq[2]])
+        P.KB.append([ns[1], ns[2] , -inf , -nq[0] , -nq[3]] )
+        P.KB.append([ns[1], ns[3] , -inf , -nq[0] , -nq[2]])
+        P.KB.append([ns[2], ns[3] , -inf , -nq[0] , -nq[1]])
+        P.KB.append([ns[0], -inf , -nq[1] , -nq[2] , -nq[3]] )
+        P.KB.append([ns[1], -inf , -nq[0] , -nq[2] , -nq[3]] )
+        P.KB.append([ns[2], -inf , -nq[0] , -nq[1] , -nq[3]] )
+        P.KB.append([ns[3], -inf , -nq[0] , -nq[1] , -nq[2]])
+        P.KB.append([-inf, -nq[0] , -nq[1] , -nq[2] , -nq[3]])
+        
 def infected_affect(t, i, j):
     '''infected affects: H0 -> S1'''
     assert t != P.times
@@ -201,7 +235,7 @@ def vaccinate_limit(t):
         return
     # we can only vaccinate at most medics(int) celss
     all_possible_vaccinate_actions = [literals('vaccinate', t, i, j) for i in range(P.rows) for j in range(P.cols)]
-    P.KB.extend(CardEnc.atmost(lits=all_possible_vaccinate_actions, bound=P.medics, encoding=EncType.pairwise))
+    P.KB.extend(CardEnc.atmost(lits=all_possible_vaccinate_actions, bound=P.medics, vpool=vpool))
     
 def quarantie_pre_cond(t, i, j):
     '''quarantie implies its pre cond - cell is S (S0 | ~qur) '''
@@ -231,7 +265,7 @@ def quarantie_limit(t):
         return
     # we can only quarantie at most police(int) cells
     all_possible_quarantie_actions = [literals('quarantie', t, i, j) for i in range(P.rows) for j in range(P.cols)]
-    P.KB.extend(CardEnc.atmost(lits=all_possible_quarantie_actions, bound=P.police, encoding=EncType.pairwise))
+    P.KB.extend(CardEnc.atmost(lits=all_possible_quarantie_actions, bound=P.police, vpool=vpool))
 
 def freedom_strict_pre_cond(t, i, j):
     '''
@@ -280,6 +314,8 @@ def handle_actions_priorities(t, i, j):
         cond = [literals('infect', t, i, j), -literals('H', t, i, j), -literals('S', t, n_i, n_j)]
         if P.medics:
             cond.append(literals('vaccinate', t, i, j))
+        if P.police:
+            cond.append(literals('quarantie', t, n_i, n_j))
         P.KB.append(cond)
     '''S cell can be qurdenate unless is healing (~heal | ~qur)'''  
     if P.police:
@@ -322,6 +358,7 @@ ids = ['301412110']
 
 def solve_problem(input):
     global P
+    global model
     P = Problem(input)
     #P.oprint()
     ### initial state clauses ###
@@ -331,6 +368,8 @@ def solve_problem(input):
                 if P.observations[t][i][j] != '?':
                     state = P.observations[t][i][j]
                     add_initial_state_to_KB(state, t, i, j)
+                else:
+                    add_initial_unknown(t, i, j)
 
     init_padding_litirals()
     
@@ -365,6 +404,7 @@ def solve_problem(input):
     call_function(no_action_negative_frame)
     
     ret_dic = dict()
+   # P.queries = []
     for queire in P.queries:
         states_status = []
         q_state, t, i, j = parse_querie(queire)
@@ -379,15 +419,18 @@ def solve_problem(input):
             #print("qur: ", queire)
             #print(state, t, i, j)
             #print(solve)
-            #if solve : 
-            #    model = g.get_model()
-            #    print(model)
-            #    prity_clauses([model])
-            #    print("sol: ")
-            #    draw_sol_from_model(model)
+            if solve and False : 
+                model = g.get_model()
+                print(model)
+                prity_clauses([model])
+                print("sol: ")
+                draw_sol_from_model(model)
+            else:
+                model = None
             states_status.append(solve)
             g.delete()
             if not solve and state == q_state:
+                
                 ret_dic[queire] = 'F'
                 break
         if len(states_status) > 1:
